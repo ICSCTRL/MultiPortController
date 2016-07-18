@@ -1,0 +1,3 @@
+# we want to ignore the logs folder as it will change every time the script
+# is ran
+./*
