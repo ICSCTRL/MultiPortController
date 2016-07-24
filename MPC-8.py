@@ -30,6 +30,7 @@ import RPi.GPIO as GPIO		# we need access to GPIO
 #import datetime				# used to manage the system time
 import subprocess
 import os					# so we can handle the restart requests
+import sys, getopt
 import pygame.mixer			# for audio playback
 import time					# used for ID timer, etc
 from multiprocessing import Queue, Process
@@ -64,6 +65,10 @@ def PasswordCheck(SuspectPassword="y",ApprovedPassword="x"):
       WriteToLog("Password Rejected")
       return 1
 
+#allow different level of prints
+def PrintToConsole(ConsoleMessage,VerboseLevel):
+	if Verbose>=VerboseLevel:
+		print(ConsoleMessage)
 def ID_Watchdog(conn):
 	activity = "0"
 	Delay = 1  # minutes
@@ -72,21 +77,20 @@ def ID_Watchdog(conn):
 		SendID = False  # clear the SendID variable every Delay minutes
 		TimeFinish = datetime.now() + timedelta(minutes=Delay)
 		TimeNow = datetime.now()
-		#print (TimeFinish)
 		while TimeFinish >= TimeNow:
 			try:
 				# This is expected to timeout after 1 second, exception will
 				# serve as an extra delay to keep the processor burden low
-				activity= conn.get(block=True, timeout=1) # Did someone keyup?
-														
+				activity= conn.get(block=True, timeout=1) # Did someone keyup?			
 			except:
 				time.sleep (1)
 			if activity == "1" or SendID == True: # want the value to stay set
 				SendID = True
 			if activity == "Q": # terminate process
-				sys.exit()
-			TimeNow = datetime.now()
-            #print (TimeNow)
+			
+				print("ID Watchdog process quitting")
+				return
+			TimeNow = datetime.now() # refresh current time for the next itterationhh
 		if SendID == True:
 			WriteToLog("ID announced")
 			TransmitterEnableQueue.put(1) # turn on the outputs
@@ -97,12 +101,9 @@ def ID_Watchdog(conn):
 			TransmitterEnableQueue.put(0)# turn off the outputs	
 		else:
 			WriteToLog("ID NOT announced")
-    #conn.close()	# close the queue, not really needed as runs forever
-	  
 def GetTimeString():
    # get preformatted time stamp
-   return (datetime.strftime(
-      datetime.now(),'%Y%m%d_%H:%M:%S'))
+   return (datetime.strftime(datetime.now(),'%Y%m%d_%H:%M:%S'))
 def WriteToLog(LogEntry):
    # generic log file entry
    with open(LogFilePath, "a+") as log:
@@ -129,7 +130,7 @@ RTC_RDY    	= 11
 AUDIO_SDTI  = 40
 AUDIO_SDTO  = 38
 AUDIO_LRCK  = 36
-AUDIO_MCLK  = 34
+AUDIO_MCLK  = 32
 AUDIO_SCLK  = 18
 GPI_INT    	= 16
 SPI_ADC_CS 	= 24
@@ -186,32 +187,37 @@ def PI_PIN_SETUP():
 	# Enable the Interrupts with appropriate edge detections
 	GPIO.add_event_detect(RESETn, GPIO.FALLING, callback=RESET_INT_CALLBACK)
 	GPIO.add_event_detect(COS_INT, GPIO.RISING, callback=COS_INT_CALLBACK_START)
-#################### Configure Expander GPIO ##########################################################################
-
-#################### Threaded Callbacks (Interrupts)###################################################################
-# These functions will spawn into a new thread to monitor the respective signals
-def TransmitterEnable ():
+def TransmitterEnable (Queue):
 	# we should only get messages here to turn on/off the transmitter
 	# transmitter will stay on as long as 1 channel is active
 	
 	# COS_INT_CALLBACK_XXX and the ID process are the only sources for this data
-	cosActive=[0,0,0,0,0,0,0,0] #2-8 & dummy channel 
+	cosActive=[False,False,False,False,False,False,False,False,False] #2-8 & dummy channels (0-1)
+	# Index values 0&1 should never change, only provided to keep indexing simple for real channels
+	idStatus = 0;
+	
 	while True:
 		Transmit = 0 # clear the sticky bits
-		status = (8,0) # clear the queue read values
+		Status = [0,False] # clear the queue read values incase .get fails
 		try:
-			Status = TransmitterEnableQueue.get(block=False, timeout=0.05)#(channel,enabled)
+			Status = Queue.get(block=True, timeout=0.05)#(channel,enabled)
+			PrintToConsole ("Read from TransmitterEnableQueue",2)
+			PrintToConsole("Channel:"+str(Status[0]) + " Value:" + str(Status[1]),2)
+			if Status[0] == 100:
+				PrintToConsole ("Transmitter process quitting",0)
+				return
+			cosActive[Status[0]]=Status[1]
+			PrintToConsole("cosAcosActive: "+cosActive,2)
+			WriteToLog("TransmitterEnableQueue value read channel " + str(Status[0]) + " state " + str(Status[1]))
 		except:
-			sleep(0) # no need to wait any longer
-		
-		# update the array with the new value read in (if any)
-		cosActive[Status[0]] = cosActive[1]
-		
+			time.sleep(0.05) # no need to wait any longer
+			PrintToConsole("No messages received from TransmitterEnableQueue",4)
 		#check for a message from the ID transmitting queue
 		try:
-			idStatus = idTransmitterEnableQueue.get(block=False, timeout=0.05)#(channel,enabled)
+			idStatus = idTransmitterEnableQueue.get(block=False, timeout=0.05)
+			WriteToLog("TransmitterEnable read idStatus"+ idStatus)
 		except:
-			sleep(0) # no need to wait any longer
+			time.sleep(0.05) # no need to wait any longer
 		
 		# check if any of the bits are active, if so turn/keep the transmitter on
 		for x in range (0,6): # remember not to use the last index, dummy channel
@@ -222,18 +228,19 @@ def TransmitterEnable ():
 		if Transmit == True:
 			channelOutputEnable(True)
 		else:
-			channelOutputEnable(False)
-		return								
+			channelOutputEnable(False)				
 def channelOutputEnable(transmit):
 	if transmit == True:
 		#write the active channels list to the GPIO expander
-		sleep(0)
+		PrintToConsole("Transmitter Enabled",3)
+		time.sleep(0)
 	else:
 		#clear the GPIO expander output to disable the transmitters
-		sleep(0)
+		PrintToConsole("Transmitter Disabled",3)
+		time.sleep(0)
 	return 0				
-def COS_INT_CALLBACK_START (): 
-	Channel = "DEFAULT"
+def COS_INT_CALLBACK_START (channel): 
+	Channel = 2
 	# We need to read back the state of the IO expander
 	# to see who actually triggered the interrupt so we can 
 	# work on the appropriate signal source
@@ -244,18 +251,17 @@ def COS_INT_CALLBACK_START ():
    
 	
 	#if active channel, notify the ID Announcer process so it can send the call
-	WriteToLog("COS Signal detected on channel"+Channel)
+	WriteToLog("COS Signal detected on channel"+ str(Channel))
 	idAnnouncerQueue.put("1")
 	
 	# Turn on the Transmitter(s) if not already active
-	#WriteToLog(Channel+"")
-	
+	TransmitterEnableQueue.put([Channel,True])
+
 	# reconfigure the interrupt to watch for the end of the event
 	GPIO.remove_event_detect(COS_INT) 
 	GPIO.add_event_detect(COS_INT, GPIO.FALLING, callback=COS_INT_CALLBACK_END)
-	
-def COS_INT_CALLBACK_END (): 
-	Channel = "DEFAULT"
+def COS_INT_CALLBACK_END (channel): 
+	Channel = 2
 	# We need to read back the state of the IO expander
 	# to see who actually triggered the interrupt so we can 
 	# work on the appropriate signal source
@@ -266,16 +272,15 @@ def COS_INT_CALLBACK_END ():
    
 	
 	#if active channel, notify the ID Announcer process so it can send the call
-	WriteToLog("COS Signal removed on channel"+Channel)
+	WriteToLog("COS Signal removed on channel"+ str(Channel))
 	idAnnouncerQueue.put("0")
 	
-	# Turn on the Transmitter(s) if not already active
-	#WriteToLog(Channel+"stopped receiving")
+	# Turn off the Transmitter(s) if not already active
+	TransmitterEnableQueue.put([Channel,False])
 	
-	# reconfigure the interrupt to watch for the end of the event
+	# reconfigure the interrupt to watch for the next event
 	GPIO.remove_event_detect(COS_INT) 
 	GPIO.add_event_detect(COS_INT, GPIO.RISING, callback=COS_INT_CALLBACK_START)
-	
 def DTMF_INT_CALLBACK ():
 	PassCheckUser = 0
 	PassCheckAdmin = 0;
@@ -309,11 +314,9 @@ def DTMF_INT_CALLBACK ():
    
 	# validate password
 	Passcheck = PasswordCheck(SuspectPassword=DTMFPassword,ApprovedPassword=SystemPassword)
-# DTMF_INT_CALLBACK
-
 def RESET():
 	WriteToLog("Reset requested, system preparing to reboot")
-	print ("Resetting Now!!!")
+	PrintToConsole ("Resetting Now!!!",0)
 	# Notify audibly the system is being reset
 	pygame.mixer.music.load("/home/pi/MPC8/MessagesEnglish/StationID/StationCallSignVoice.mp3")
 	pygame.mixer.music.play()
@@ -323,18 +326,37 @@ def RESET():
 		continue	
 	# issue the actual restart event
 	os.system('sudo shutdown -r now')
-	
 def RESET_INT_CALLBACK():
 	RESET()	
+def main(argv):
+   inputfile = ''
+   outputfile = ''
+   try:
+      opts, args = getopt.getopt(argv,"hi:o:",["ifile=","ofile="])
+   except getopt.GetoptError:
+      print ('test.py -i <inputfile> -o <outputfile>')
+      sys.exit(2)
+   for opt, arg in opts:
+      if opt == '-h':
+         print ('test.py -i <inputfile> -o <outputfile>')
+         sys.exit()
+      elif opt in ("-i", "--ifile"):
+         inputfile = arg
+      elif opt in ("-o", "--ofile"):
+         outputfile = arg
+   print ('Input file is "', inputfile)
+   print ('Output file is "', outputfile)
 
-#################### MAIN Functionality ####################
-
-
+	################### MAIN Functionality ####################
+if __name__ == "__main__":
+   main(sys.argv[1:])
+   
+Verbose=0
 # Create the log file
 LogFileName = GetTimeString() +"_logFile.log"
 global LogFilePath 
 LogFilePath = "/home/pi/MPC8/SystemLogs/"+LogFileName
-print ("Log Path: "+LogFilePath)
+PrintToConsole ("Log Path: "+LogFilePath,0)
 with open(LogFilePath, "w") as log:
    log.close()
 WriteToLog("Application Launched")
@@ -349,6 +371,10 @@ WriteToLog("****** Starting the idAnnouncer Process *********")
 idAnnouncer = Process(target=ID_Watchdog, args=(idAnnouncerQueue,))
 idAnnouncer.start() 
 
+WriteToLog("****** Starting Transmitter process *************")
+TransmitterProcess = Process(target=TransmitterEnable, args=(TransmitterEnableQueue,))
+TransmitterProcess.start()
+
 # Send the stations Call sign
 WriteToLog("Sending Initial Callsign")
 pygame.mixer.music.load("/home/pi/MPC8/MessagesEnglish/StationID/StationCallSignVoice.mp3")
@@ -360,19 +386,21 @@ pygame.mixer.music.play()
 WriteToLog("***** Repeater system normal operation started *****")
 
 #debug pin
-time.sleep (65)
-print ("Toggling COS_INT ON")
+time.sleep (5)
+PrintToConsole ("Toggling COS_INT ON",2)
 GPIO.output(DebugPin, 1)
 time.sleep (5)
-print ("Toggling COS_INT OFF")
+PrintToConsole ("Toggling COS_INT OFF",2)
 GPIO.output(DebugPin, 0)
-
-while True:
-	try:
-		time.sleep (1)
-	except keyboardinterrupt:
-		idAnnouncerQueue.put("Q") #kill the ID announcer
-		sys.exit()
+try:
+	time.sleep (10)
+	idAnnouncerQueue.put("Q") #kill the ID announcer Process
+	TransmitterEnableQueue.put([100,True]) #kill the Transmitter Process
+	sys.exit()
+except:
+	idAnnouncerQueue.put("Q") #kill the ID announcer Process
+	TransmitterEnableQueue.put([100,True]) #kill the Transmitter Process
+	sys.exit()
 
 
 #################### References ############################
