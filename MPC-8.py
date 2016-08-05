@@ -36,6 +36,14 @@ import time					# used for ID timer, etc
 from multiprocessing import Queue, Process
 from datetime import datetime, timedelta
 
+
+#Email Account Settings
+RepeaterEmail='Dloranger08@gmail.com'
+RepeaterEmailPassword=''
+RecipientEmail=RepeaterEmail
+Subject='Repeater Test Email'
+EmailBody='Hey we successfully sent a test email'
+
 #################### Communication Queues #############################################################################
 idAnnouncerQueue = Queue() # Queue for notifying the ID announcer to announce
 TransmitterEnableQueue = Queue() # Queue for the ID_Watchdog to configure the outputs
@@ -251,7 +259,7 @@ def COS_INT_CALLBACK_START (channel):
    
 	
 	#if active channel, notify the ID Announcer process so it can send the call
-	WriteToLog("COS Signal detected on channel"+ str(Channel))
+	WriteToLog("COS Signal detected on channel "+ str(Channel))
 	idAnnouncerQueue.put("1")
 	
 	# Turn on the Transmitter(s) if not already active
@@ -272,7 +280,7 @@ def COS_INT_CALLBACK_END (channel):
    
 	
 	#if active channel, notify the ID Announcer process so it can send the call
-	WriteToLog("COS Signal removed on channel"+ str(Channel))
+	WriteToLog("COS Signal removed on channel "+ str(Channel))
 	idAnnouncerQueue.put("0")
 	
 	# Turn off the Transmitter(s) if not already active
@@ -328,34 +336,69 @@ def RESET():
 	os.system('sudo shutdown -r now')
 def RESET_INT_CALLBACK():
 	RESET()	
-def main(argv):
-   inputfile = ''
-   outputfile = ''
-   try:
-      opts, args = getopt.getopt(argv,"hi:o:",["ifile=","ofile="])
-   except getopt.GetoptError:
-      print ('test.py -i <inputfile> -o <outputfile>')
-      sys.exit(2)
-   for opt, arg in opts:
-      if opt == '-h':
-         print ('test.py -i <inputfile> -o <outputfile>')
-         sys.exit()
-      elif opt in ("-i", "--ifile"):
-         inputfile = arg
-      elif opt in ("-o", "--ofile"):
-         outputfile = arg
-   print ('Input file is "', inputfile)
-   print ('Output file is "', outputfile)
+def SendEmail(RepeaterEmail,RepeaterEmailPassword,RecipientEmail,Subject,EmailBody):
+	#RepeaterEmail - Who is sending the email, typically an admin of the system
+	#RepeaterEmailPassword - the same email acct password (needed to login)
+	#RecipientEmail - Who does the email goto? (Recommend email reflector)
+	#Subject - Something meaningful to alert the users to an event or msg
+	#EmailBody - the content of the email in plain text format
+	
+	# Be sure if using Gmail (recommended), that the Repeater account has setup 
+	# "Less Secure Apps" support
+	# https://www.google.com/settings/security/lesssecureapps
+	#
+	# function built from this reference page
+	# https://www.mkyong.com/python/how-do-send-email-in-python-via-smtplib/
+	
+	# Import smtplib for the actual sending function
+	import smtplib
 
-	################### MAIN Functionality ####################
-if __name__ == "__main__":
-   main(sys.argv[1:])
+	to = RepeaterEmail
+	gmail_user = RecipientEmail
+	gmail_pwd = RepeaterEmailPassword
+	smtpserver = smtplib.SMTP("smtp.gmail.com",587)
+	smtpserver.ehlo()
+	smtpserver.starttls()
+	smtpserver.ehlo
+	smtpserver.login(gmail_user, gmail_pwd)
+	header = 'To:' + to + '\n' + 'From: ' + gmail_user + '\n' + 'Subject:'+Subject+' \n'
+	print (header)
+	msg = header + EmailBody+'\n'
+	smtpserver.sendmail(gmail_user, to, msg)
+	print ('done!')
+	smtpserver.close()
+def GetInputs():
+	print("RepeaterEmailPassword is blank so lets get a password and verbosity\n"+
+	"level configured.  You can skip this by loading a password in the python scipt")
+	while True:
+		VerboseLevel=input("Please Select the verbosity Level for this session:[0-4] ")
+		try:
+			VerboseLevel = int(VerboseLevel)
+			break
+		except ValueError:
+			print("\nThat's not an int!\n")
+	while True:
+		RepeaterEmailPassword=input("Please enter the email *"+RepeaterEmail+"* password: ")
+		print ("Using "+RepeaterEmailPassword+" for emails if they are used")
+		Accept = input("Accept Password? y/n")
+		if Accept=="y":
+			break
+	return ([VerboseLevel,RepeaterEmailPassword])
+		
+################### MAIN Functionality ####################
+
    
 Verbose=0
+if RepeaterEmailPassword =='':
+	Inputs=GetInputs()
+	Verbose=Inputs[0]
+	RepeaterEmailPassword=Inputs[1]
+	PrintToConsole("Password:"+RepeaterEmailPassword,0)
 # Create the log file
 LogFileName = GetTimeString() +"_logFile.log"
 global LogFilePath 
 LogFilePath = "/home/pi/MPC8/SystemLogs/"+LogFileName
+
 PrintToConsole ("Log Path: "+LogFilePath,0)
 with open(LogFilePath, "w") as log:
    log.close()
@@ -393,6 +436,13 @@ time.sleep (5)
 PrintToConsole ("Toggling COS_INT OFF",2)
 GPIO.output(DebugPin, 0)
 try:
+	try:
+		SendEmail(RepeaterEmail,RepeaterEmailPassword,RecipientEmail,Subject,EmailBody)
+		print ("email sent successfully")
+	except:
+		print("Failed to send email")
+		print ("{0}".format(err))
+	
 	time.sleep (10)
 	idAnnouncerQueue.put("Q") #kill the ID announcer Process
 	TransmitterEnableQueue.put([100,True]) #kill the Transmitter Process
